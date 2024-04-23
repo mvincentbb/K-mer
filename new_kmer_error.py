@@ -1,11 +1,18 @@
 from Bio import SeqIO
-
+import multiprocessing
 from collections import Counter
 import itertools
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
     
+limitation = 3000
+def count_kmers(sequence, k):
+    dict_kmers = Counter()
+    for i in range(len(sequence) - k + 1):
+        kmer = sequence[i:i+k]
+        if 'N' not in kmer:
+            dict_kmers[kmer] += 1
 
 def parse_fastq(fastq_file, k):
     dict_kmers = Counter()
@@ -28,8 +35,52 @@ def parse_fastq(fastq_file, k):
                 continue
             count_kmers(sequence, k)
             sequence_count += 1
-            # if sequence_count == 1000:
-            #     break
+            if sequence_count == limitation:
+                break
+
+    return dict_kmers
+
+
+def worker(input_queue, output_queue, k):
+    """ Worker function for processing parts of the FASTQ file. """
+    while True:
+        item = input_queue.get()
+        if item is None:
+            break  # No more items to process
+        identifier, sequence, quality = item
+        kmer_counts = count_kmers(sequence, k)
+        output_queue.put(kmer_counts)
+
+def parse_fastq_multiprocess(fastq_file, k):
+    """ Parse FASTQ file using multiple processes """
+    manager = multiprocessing.Manager()
+    input_queue = manager.Queue()
+    output_queue = manager.Queue()
+
+    # Start worker processes
+    num_workers = multiprocessing.cpu_count()
+    processes = [multiprocessing.Process(target=worker, args=(input_queue, output_queue, k))
+                 for _ in range(num_workers)]
+    for p in processes:
+        p.start()
+
+    # Enqueue sequences to process
+    for record in SeqIO.parse(fastq_file, "fastq"):
+        input_queue.put((record.id, str(record.seq), record.letter_annotations["phred_quality"]))
+
+    # Send None to signal the end
+    for _ in processes:
+        input_queue.put(None)
+
+    # Gather results
+    dict_kmers = Counter()
+    while any(p.is_alive() for p in processes):
+        while not output_queue.empty():
+            dict_kmers.update(output_queue.get())
+
+    # Ensure all workers are done
+    for p in processes:
+        p.join()
 
     return dict_kmers
 
@@ -43,7 +94,8 @@ def frequency_and_distribution(fastq_file, k):
         dict: A dictionary where each key is a count and each value is the frequency of this count.
     """
     # Count the frequency of each k-mer count using another Counter
-    dict_kmers = parse_fastq(fastq_file, k)
+    # dict_kmers = parse_fastq(fastq_file, k)
+    dict_kmers = parse_fastq_multiprocess(fastq_file, k)
     count_frequencies = Counter(dict_kmers.values())
     count_frequencies = dict(count_frequencies)
     # print(find_i0_imax(count_frequencies))
@@ -99,11 +151,11 @@ def correct_read3(fastq_file, kmer_length, i0_threshold=None):
         i0_threshold = i0[1]
 
     corrected_reads = []
-    dict_kmers = parse_fastq(fastq_file, kmer_length)  # Parse only once
+    dict_kmers = parse_fastq_multiprocess(fastq_file, kmer_length)  # Parse only once
 
     for line, record in enumerate(SeqIO.parse(fastq_file, "fastq")):
-        # if line == 3000:
-            # break
+        if line == limitation:
+            break
         sequence = str(record.seq)
         quality_scores = record.letter_annotations["phred_quality"]
         new_sequence = list(sequence)
@@ -134,5 +186,9 @@ def correct_read3(fastq_file, kmer_length, i0_threshold=None):
 #     print(frequency_and_distribution("R1_paired.fastqsanger", 12), file=output_file)
 
 # Example usage:
-correct_read3('R1_paired.fastqsanger', 12)
+# correct_read3('R1_paired.fastqsanger', 12)
 # write_fastq(corrected_reads, 'corrected_output.fastq')
+
+
+if __name__ == '__main__':
+    correct_read3('R1_paired.fastqsanger', 12)
