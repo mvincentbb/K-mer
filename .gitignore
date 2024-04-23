@@ -28,3 +28,7 @@
 /test3000_6.txt_report.txt
 /test3000_7.txt_k12.fastq
 /test3000_7.txt_report.txt
+/*.fastq
+/*.fastq.gz
+/*.fastqsanger
+/*.txt
